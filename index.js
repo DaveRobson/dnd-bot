@@ -133,6 +133,9 @@ client.on('messageCreate', async (message) => {
             turnCounts.set(channelId, 0);
             campaignConfig.delete(channelId);
             readyCharacters.delete(channelId);
+            for (const [threadId, s] of creationSessions) {
+                if (s.channelId === channelId) creationSessions.delete(threadId);
+            }
             return message.channel.send(`**Theme set: ${theme.toUpperCase()}**\n*The universe shifts. Set your character name with \`!character <name>\`, then just type to play.*`);
         }
 
@@ -150,6 +153,9 @@ client.on('messageCreate', async (message) => {
             turnCounts.set(channelId, 0);
             campaignConfig.delete(channelId);
             readyCharacters.delete(channelId);
+            for (const [threadId, s] of creationSessions) {
+                if (s.channelId === channelId) creationSessions.delete(threadId);
+            }
             return message.reply('Session memory, character names, and campaign data cleared.');
         }
 
