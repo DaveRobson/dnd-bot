@@ -91,13 +91,24 @@ Once complete, output this exact block:
 
 End your final message with exactly this on its own line: [CHARACTER READY]`;
 
-function buildSystemPrompt(themeKey) {
+function buildSystemPrompt(themeKey, campaignState = null) {
     const file = THEME_FILES[themeKey] ?? '5esrd.md';
     let rules = '';
     try {
         rules = fs.readFileSync(file, 'utf-8');
     } catch {
         rules = 'Rules file not found. Use baseline RPG logic.';
+    }
+
+    let campaignBlock = '';
+    if (campaignState) {
+        const arcs = campaignState.storyArcs
+            ? JSON.stringify(campaignState.storyArcs, null, 2)
+            : 'None established yet.';
+        const rels = campaignState.relationships
+            ? JSON.stringify(campaignState.relationships, null, 2)
+            : 'None established yet.';
+        campaignBlock = `\n\n[CAMPAIGN STATE]\nStory Arcs:\n${arcs}\n\nRelationships:\n${rels}`;
     }
 
     return `You are a professional Game Master running a gritty multiplayer text adventure.
@@ -120,7 +131,7 @@ STRICT GUARDRAILS:
 - If an action requires a specific item (e.g. Thieves' Tools) and the chat history does not show the player possessing it, the action automatically fails. Do not assume they acquired it off-screen.
 - Never retcon established facts. If a character took damage, that HP loss persists.
 
-UNIVERSE RULES:
+UNIVERSE RULES:${campaignBlock}
 ${rules}`;
 }
 
@@ -130,14 +141,21 @@ async function summariseSession(channelId, history) {
             model: 'gemini-2.5-flash',
             contents: history,
             config: {
-                systemInstruction: `You are a precise campaign recorder. Summarise the current state of this D&D session into a structured block. Include:
-- Every player character: name, class, current HP / max HP, inventory, active status effects
-- Current location and approximate time of day
-- The last 5 significant events or outcomes
-- Any active quests, threats, or objectives
-- Key NPCs encountered and their relationship to the party
+                systemInstruction: `You are a precise campaign recorder. Summarise this D&D session into four clearly delimited sections.
 
-Be strictly factual — only record what is explicitly established in the conversation. Do not invent or embellish anything.`,
+## HISTORY SUMMARY
+A compressed factual record of what happened this session. Include: every player character (name, class, current HP/max HP, inventory, active status effects), current location and time of day, last 5 significant events, active quests and objectives. Be strictly factual — only record what is explicitly established in the conversation. Do not invent or embellish.
+
+## STORY ARCS
+JSON array of narrative arcs. Each arc: { "id": string, "title": string, "status": "active"|"resolved", "summary": string, "developments": string[] }. Include both active and newly resolved arcs. Only record arcs explicitly present in the conversation.
+
+## RELATIONSHIPS
+JSON object mapping character/NPC names to relationship descriptors. Format: { "CharacterName": { "type": "PC"|"NPC"|"faction", "relationships": { "OtherName": "descriptor" }, "notes": string } }. Only record relationships explicitly established in the conversation.
+
+## LORE UPDATES
+JSON array of new world facts established this session. Each entry: { "category": "location"|"faction"|"history"|"magic"|"other", "name": string, "detail": string }. Only record what was explicitly established — no invention.
+
+Output all four sections. Use the exact ## HEADER format shown above.`,
                 temperature: 0.1,
                 topP: 0.8,
                 topK: 40,
@@ -147,14 +165,53 @@ Be strictly factual — only record what is explicitly established in the conver
         const summary = response.text;
         if (!summary) return;
 
-        // Keep the last 6 history entries (3 full exchanges) and prepend the summary
+        // Parse the four sections
+        const sections = {};
+        const sectionRegex = /^## (HISTORY SUMMARY|STORY ARCS|RELATIONSHIPS|LORE UPDATES)\s*$([\s\S]*?)(?=^## |\s*$)/gm;
+        let match;
+        while ((match = sectionRegex.exec(summary)) !== null) {
+            sections[match[1]] = match[2].trim();
+        }
+
+        const historySummary = sections['HISTORY SUMMARY'] ?? summary;
+
+        // Parse JSON sections safely
+        let storyArcs = null;
+        let relationships = null;
+        let loreUpdates = null;
+        try { storyArcs = JSON.parse(sections['STORY ARCS'] ?? 'null'); } catch { /* keep null */ }
+        try { relationships = JSON.parse(sections['RELATIONSHIPS'] ?? 'null'); } catch { /* keep null */ }
+        try { loreUpdates = JSON.parse(sections['LORE UPDATES'] ?? 'null'); } catch { /* keep null */ }
+
+        // Compress history: keep last 6 turns, prepend summary as ground truth
         const recentTurns = history.splice(-6);
         history.length = 0;
         history.push(
-            { role: 'user', parts: [{ text: `[AUTO CAMPAIGN STATE — Ground Truth — treat this as authoritative]\n\n${summary}` }] },
+            { role: 'user', parts: [{ text: `[AUTO CAMPAIGN STATE — Ground Truth — treat this as authoritative]\n\n${historySummary}` }] },
             { role: 'model', parts: [{ text: 'Campaign state acknowledged. Continuing the session with this as ground truth.' }] },
             ...recentTurns
         );
+
+        // Persist to DB
+        await db.saveChatSession(channelId, history);
+        if (storyArcs !== null || relationships !== null || loreUpdates !== null) {
+            const config = campaignConfig.get(channelId);
+            if (config) {
+                // Update in-memory campaign state with new narrative data
+                config.storyArcs = storyArcs ?? config.storyArcs;
+                config.relationships = relationships ?? config.relationships;
+                if (loreUpdates) {
+                    const existingLore = config.lore ?? '';
+                    const newEntries = loreUpdates.map(e => `[${e.category.toUpperCase()}] ${e.name}: ${e.detail}`).join('\n');
+                    config.lore = existingLore ? `${existingLore}\n${newEntries}` : newEntries;
+                }
+                await db.saveCampaign(channelId, {
+                    storyArcs: config.storyArcs,
+                    relationships: config.relationships,
+                    lore: config.lore,
+                });
+            }
+        }
     } catch (error) {
         console.error('Summarisation failed:', error.message);
         // Non-fatal — session continues with untrimmed history
@@ -520,7 +577,7 @@ client.on('messageCreate', async (message) => {
                     model: 'gemini-2.5-flash',
                     contents: history,
                     config: {
-                        systemInstruction: buildSystemPrompt('fantasy'),
+                        systemInstruction: buildSystemPrompt('fantasy', campaignConfig.get(channelId)),
                         temperature: 0.7, // Testing value — drop to 0.4 for production
                         topP: 0.9,
                         topK: 50,
@@ -596,7 +653,7 @@ client.on('messageCreate', async (message) => {
             model: 'gemini-2.5-flash',
             contents: history,
             config: {
-                systemInstruction: buildSystemPrompt(channelThemes.get(channelId)),
+                systemInstruction: buildSystemPrompt(channelThemes.get(channelId), campaignConfig.get(channelId)),
                 temperature: 0.4, // Testing value — drop to 0.2 for production
                 topP: 0.8,
                 topK: 40,
@@ -607,6 +664,7 @@ client.on('messageCreate', async (message) => {
         if (!narration) throw new Error('Empty response from Gemini');
 
         history.push({ role: 'model', parts: [{ text: narration }] });
+        await db.saveChatSession(channelId, history);
 
         // Discord message limit is 2000 chars
         for (let i = 0; i < narration.length; i += 2000) {
