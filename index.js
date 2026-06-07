@@ -403,6 +403,12 @@ client.on('messageCreate', async (message) => {
     if (message.content.startsWith('!')) {
         const [command, ...args] = message.content.slice(1).trim().split(/\s+/);
 
+        if (command === 'resume_campaign') {
+            channelThemes.set(channelId, 'fantasy');
+            await db.saveChannelState(channelId, 'fantasy', turnCounts.get(channelId) ?? 0);
+            return message.reply('Campaign resumed with **fantasy** theme. Continue playing!');
+        }
+
         if (command === 'set_theme') {
             const theme = args[0]?.toLowerCase();
             if (!theme || !THEME_FILES[theme]) {
@@ -455,6 +461,7 @@ client.on('messageCreate', async (message) => {
                 '`!start_campaign` — Begin the session (campaign + ≥1 character required)\n\n' +
                 '**During a session**\n' +
                 '`!character <name>` — Set or change your character name\n' +
+                '`!resume_campaign` — Reconnect the DM after a bot restart without losing progress\n' +
                 '`!wipe_memory` — Clear all session data and start over\n' +
                 '`!set_theme <fantasy|cyberpunk|western>` — Switch theme and reset session\n' +
                 '`!help` — Show this message\n\n' +
@@ -692,10 +699,13 @@ client.on('messageCreate', async (message) => {
     if (message.channel.isThread()) return;
 
     if (!channelThemes.has(channelId)) {
-        // Recover silently if a campaign is already running (theme lost due to restart/deploy overlap)
-        const hasSession = chatSessions.get(channelId)?.length > 0;
-        const hasCampaign = campaignConfig.get(channelId)?.status === 'ready';
-        if (hasSession || hasCampaign) {
+        // Recover silently if any campaign activity exists for this channel
+        const hasActivity =
+            chatSessions.get(channelId)?.length > 0 ||
+            campaignConfig.has(channelId) ||
+            readyCharacters.has(channelId) ||
+            characterNames.get(channelId)?.size > 0;
+        if (hasActivity) {
             channelThemes.set(channelId, 'fantasy');
         } else {
             return message.reply('Set a theme first with `!set_theme fantasy`, `cyberpunk`, or `western`.');

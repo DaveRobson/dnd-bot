@@ -152,9 +152,10 @@ export async function loadAll(chatSessions, channelThemes, characterNames, turnC
         chatSessions.set(row.channel_id, row.history);
     }
 
-    // If a channel has chat history but no channel_state row (e.g. DB write failed during !start_campaign),
-    // default to 'fantasy' so the session stays playable after a restart.
-    for (const channelId of chatSessions.keys()) {
+    // Any channel with campaign or chat data but no channel_state row gets 'fantasy' as fallback.
+    // This covers cases where the DB write for channel_state failed during !start_campaign.
+    const activeChannels = new Set([...chatSessions.keys(), ...campaignConfig.keys()]);
+    for (const channelId of activeChannels) {
         if (!channelThemes.has(channelId)) {
             channelThemes.set(channelId, 'fantasy');
             console.warn(`Recovered theme 'fantasy' for channel ${channelId} (missing channel_state row)`);
