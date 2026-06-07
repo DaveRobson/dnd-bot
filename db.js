@@ -77,16 +77,26 @@ export async function saveCharacter(channelId, userId, { characterName, displayN
         `INSERT INTO characters (channel_id, user_id, character_name, display_name, sheet)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (channel_id, user_id) DO UPDATE SET
-             character_name = $3,
-             display_name   = $4,
+             character_name = COALESCE($3, characters.character_name),
+             display_name   = COALESCE($4, characters.display_name),
              sheet          = COALESCE($5, characters.sheet)`,
-        [channelId, userId, characterName, displayName, sheet ?? null]
+        [channelId, userId, characterName ?? null, displayName ?? null, sheet ?? null]
     );
 }
 
 export async function deleteCampaignAndChars(channelId) {
-    await pool.query('DELETE FROM campaign WHERE channel_id = $1', [channelId]);
-    await pool.query('DELETE FROM characters WHERE channel_id = $1', [channelId]);
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM campaign   WHERE channel_id = $1', [channelId]);
+        await client.query('DELETE FROM characters WHERE channel_id = $1', [channelId]);
+        await client.query('COMMIT');
+    } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+    } finally {
+        client.release();
+    }
 }
 
 export async function saveChatSession(channelId, history) {
@@ -98,9 +108,64 @@ export async function saveChatSession(channelId, history) {
     );
 }
 
+export async function loadAll(chatSessions, channelThemes, characterNames, turnCounts, campaignConfig, readyCharacters) {
+    const [channelStateRes, campaignRes, charactersRes, chatSessionsRes] = await Promise.all([
+        pool.query('SELECT * FROM channel_state'),
+        pool.query('SELECT * FROM campaign'),
+        pool.query('SELECT * FROM characters'),
+        pool.query('SELECT * FROM chat_sessions'),
+    ]);
+
+    for (const row of channelStateRes.rows) {
+        channelThemes.set(row.channel_id, row.theme);
+        turnCounts.set(row.channel_id, row.turn_count);
+    }
+
+    for (const row of campaignRes.rows) {
+        campaignConfig.set(row.channel_id, {
+            status: row.status,
+            brief: row.brief,
+            lore: row.lore,
+            storyArcs: row.story_arcs,
+            relationships: row.relationships,
+            history: [],
+        });
+    }
+
+    for (const row of charactersRes.rows) {
+        const { channel_id, user_id, character_name, display_name, sheet } = row;
+
+        if (!characterNames.has(channel_id)) characterNames.set(channel_id, new Map());
+        characterNames.get(channel_id).set(user_id, character_name);
+
+        if (sheet != null) {
+            if (!readyCharacters.has(channel_id)) readyCharacters.set(channel_id, new Map());
+            readyCharacters.get(channel_id).set(user_id, {
+                displayName: display_name,
+                characterName: character_name,
+                sheet,
+            });
+        }
+    }
+
+    for (const row of chatSessionsRes.rows) {
+        chatSessions.set(row.channel_id, row.history);
+    }
+}
+
 export async function clearChannel(channelId) {
-    await pool.query('DELETE FROM channel_state  WHERE channel_id = $1', [channelId]);
-    await pool.query('DELETE FROM campaign        WHERE channel_id = $1', [channelId]);
-    await pool.query('DELETE FROM characters      WHERE channel_id = $1', [channelId]);
-    await pool.query('DELETE FROM chat_sessions   WHERE channel_id = $1', [channelId]);
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM channel_state  WHERE channel_id = $1', [channelId]);
+        await client.query('DELETE FROM campaign        WHERE channel_id = $1', [channelId]);
+        await client.query('DELETE FROM characters      WHERE channel_id = $1', [channelId]);
+        await client.query('DELETE FROM chat_sessions   WHERE channel_id = $1', [channelId]);
+        await client.query('COMMIT');
+    } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+    } finally {
+        client.release();
+    }
 }
