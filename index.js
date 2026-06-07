@@ -160,6 +160,53 @@ Be strictly factual — only record what is explicitly established in the conver
     }
 }
 
+async function handleCampaignSetup(message, channelId) {
+    const config = campaignConfig.get(channelId);
+    const { history } = config;
+
+    history.push({ role: 'user', parts: [{ text: message.content }] });
+    await message.channel.sendTyping();
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: history,
+            config: {
+                systemInstruction: CAMPAIGN_SETUP_PROMPT,
+                temperature: 0.5,
+                topP: 0.9,
+                topK: 50,
+            },
+        });
+
+        const text = response.text;
+        if (!text) throw new Error('Empty response from Gemini');
+
+        const isReady = text.includes('[CAMPAIGN READY]');
+        const clean = text.replace('[CAMPAIGN READY]', '').trim();
+
+        history.push({ role: 'model', parts: [{ text }] });
+
+        for (let i = 0; i < clean.length; i += 2000) {
+            await message.channel.send(clean.slice(i, i + 2000));
+        }
+
+        if (isReady) {
+            const briefMatch = clean.match(/## CAMPAIGN BRIEF[\s\S]*/);
+            const brief = briefMatch ? briefMatch[0] : clean;
+            campaignConfig.set(channelId, { status: 'ready', brief, history });
+            await message.channel.send(
+                '✅ **Campaign configured!**\n' +
+                'Each player: run `!create_character` to build your character in a private thread.\n' +
+                'When everyone is ready, run `!start_campaign` to begin.'
+            );
+        }
+    } catch (error) {
+        console.error(error);
+        await message.channel.send(`**Error:** ${error.message}`);
+    }
+}
+
 client.once('ready', () => {
     console.log(`Dungeon Master online as ${client.user.tag}`);
 });
@@ -221,7 +268,52 @@ client.on('messageCreate', async (message) => {
             );
         }
 
+        if (command === 'setup_campaign') {
+            campaignConfig.set(channelId, { status: 'configuring', brief: null, history: [] });
+            readyCharacters.delete(channelId);
+            characterNames.set(channelId, new Map());
+            const config = campaignConfig.get(channelId);
+
+            await message.channel.send(
+                'Starting campaign setup. I\'ll ask a few questions to design your adventure.\n\n' +
+                'Once we\'re done:\n' +
+                '• Each player runs `!create_character` to build their character in a private thread\n' +
+                '• When everyone\'s ready, any player runs `!start_campaign` to begin\n\n' +
+                'Let\'s build your world.'
+            );
+
+            const kickoff = 'A group of friends want to set up a D&D campaign. Welcome them and ask your first question.';
+            try {
+                const opening = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: [{ role: 'user', parts: [{ text: kickoff }] }],
+                    config: {
+                        systemInstruction: CAMPAIGN_SETUP_PROMPT,
+                        temperature: 0.5,
+                        topP: 0.9,
+                        topK: 50,
+                    },
+                });
+                const openingText = opening.text;
+                config.history.push(
+                    { role: 'user', parts: [{ text: kickoff }] },
+                    { role: 'model', parts: [{ text: openingText }] }
+                );
+                await message.channel.send(openingText);
+            } catch (error) {
+                console.error(error);
+                await message.channel.send(`**Error starting campaign setup:** ${error.message}`);
+                campaignConfig.delete(channelId);
+            }
+            return;
+        }
+
         return;
+    }
+
+    // Route to campaign setup handler if active in this channel
+    if (!message.channel.isThread() && campaignConfig.get(channelId)?.status === 'configuring') {
+        return handleCampaignSetup(message, channelId);
     }
 
     if (!channelThemes.has(channelId)) {
