@@ -62,7 +62,7 @@ Once you have enough to work with, output this exact block:
 **Key Threats:** [Main antagonists or dangers]
 **Objectives:** [What the players need to accomplish]
 
-End your final message with exactly: [CAMPAIGN READY]`;
+End your final message with exactly this on its own line: [CAMPAIGN READY]`;
 
 const CHARACTER_CREATION_PROMPT = `You are a friendly D&D 5e character creation guide. Walk the player through building their character in a natural conversation. Focus on the fantasy concept first, mechanics second.
 
@@ -88,7 +88,7 @@ Once complete, output this exact block:
 **Backstory:** [1-2 sentences]
 **Personality:** [1 sentence]
 
-End your final message with exactly: [CHARACTER READY]`;
+End your final message with exactly this on its own line: [CHARACTER READY]`;
 
 function buildSystemPrompt(themeKey) {
     const file = THEME_FILES[themeKey] ?? '5esrd.md';
