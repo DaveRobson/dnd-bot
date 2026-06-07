@@ -318,12 +318,17 @@ client.on('messageCreate', async (message) => {
 
         if (command === 'help') {
             return message.reply(
-                '**DM Bot Commands**\n' +
-                '`!set_theme <fantasy|cyberpunk|western>` — Start or restart a campaign\n' +
-                '`!character <name>` — Set your character name (e.g. `!character Aria Swiftblade`)\n' +
-                '`!wipe_memory` — Clear session history and character names\n' +
+                '**DM Bot — Campaign Setup**\n' +
+                '`!setup_campaign` — Design your campaign (run this first)\n' +
+                '`!create_character` — Build your character in a thread (after campaign setup)\n' +
+                '`!party` — Show all ready characters\n' +
+                '`!start_campaign` — Begin the session (campaign + ≥1 character required)\n\n' +
+                '**During a session**\n' +
+                '`!character <name>` — Set or change your character name\n' +
+                '`!wipe_memory` — Clear all session data and start over\n' +
+                '`!set_theme <fantasy|cyberpunk|western>` — Switch theme and reset session\n' +
                 '`!help` — Show this message\n\n' +
-                'Wrap a message in `(parentheses)` to speak OOC directly to the DM.\n' +
+                'Wrap a message in `(parentheses)` to speak OOC to the DM.\n' +
                 'Say "Save campaign" to get a copy-pasteable save state.'
             );
         }
@@ -425,6 +430,90 @@ client.on('messageCreate', async (message) => {
             }
 
             return message.reply(`Your character creation thread is ready: <#${thread.id}>`);
+        }
+
+        if (command === 'party') {
+            const characters = readyCharacters.get(channelId);
+            if (!characters || characters.size === 0) {
+                return message.reply('No characters ready yet. Players should run `!create_character`.');
+            }
+            const roster = [...characters.values()]
+                .map(({ characterName, displayName }) => `• **${characterName}** (${displayName})`)
+                .join('\n');
+            return message.reply(`**Party Roster**\n${roster}`);
+        }
+
+        if (command === 'start_campaign') {
+            const config = campaignConfig.get(channelId);
+            if (!config || config.status !== 'ready') {
+                return message.reply('No campaign configured. Run `!setup_campaign` first.');
+            }
+            const characters = readyCharacters.get(channelId);
+            if (!characters || characters.size === 0) {
+                return message.reply('No characters ready yet. Players should run `!create_character`.');
+            }
+
+            const titleMatch   = config.brief.match(/\*\*Title:\*\*\s*(.+)/);
+            const toneMatch    = config.brief.match(/\*\*Tone:\*\*\s*(.+)/);
+            const settingMatch = config.brief.match(/\*\*Setting:\*\*\s*(.+)/);
+            const title   = titleMatch   ? titleMatch[1].trim()   : 'Untitled Campaign';
+            const tone    = toneMatch    ? toneMatch[1].trim()    : '';
+            const setting = settingMatch ? settingMatch[1].trim() : '';
+
+            const partyRoster = [...characters.values()].map(({ characterName, displayName, sheet }) => {
+                const raceMatch  = sheet.match(/\*\*Race:\*\*\s*(.+)/);
+                const classMatch = sheet.match(/\*\*Class:\*\*\s*(.+)/);
+                const race  = raceMatch  ? raceMatch[1].trim()  : '';
+                const cls   = classMatch ? classMatch[1].trim() : '';
+                return `${characterName} (${displayName}) — ${race} ${cls}`.trim();
+            }).join('\n');
+
+            await message.channel.send(
+                `📜 **CAMPAIGN: ${title}**\n` +
+                `Tone: ${tone}\nSetting: ${setting}\n\n` +
+                `**PARTY**\n──────────────────\n${partyRoster}\n\n` +
+                `*The adventure begins...*`
+            );
+
+            channelThemes.set(channelId, 'fantasy');
+            turnCounts.set(channelId, 0);
+
+            const characterSheets = [...characters.values()].map(({ sheet }) => sheet).join('\n\n');
+            const openingContext =
+                `[CAMPAIGN CONFIGURATION]\n\n${config.brief}\n\n` +
+                `[PARTY]\n\n${characterSheets}\n\n` +
+                `Begin the session. Narrate the opening scene described in the campaign brief. ` +
+                `Address each character by name as they arrive. Set the tone immediately.`;
+
+            const history = [{ role: 'user', parts: [{ text: openingContext }] }];
+            chatSessions.set(channelId, history);
+
+            await message.channel.sendTyping();
+
+            try {
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: history,
+                    config: {
+                        systemInstruction: buildSystemPrompt('fantasy'),
+                        temperature: 0.7, // Testing value — drop to 0.4 for production
+                        topP: 0.9,
+                        topK: 50,
+                    },
+                });
+
+                const narration = response.text;
+                if (!narration) throw new Error('Empty response from Gemini');
+                history.push({ role: 'model', parts: [{ text: narration }] });
+
+                for (let i = 0; i < narration.length; i += 2000) {
+                    await message.channel.send(narration.slice(i, i + 2000));
+                }
+            } catch (error) {
+                console.error(error);
+                await message.channel.send(`**Error:** ${error.message}`);
+            }
+            return;
         }
 
         return;
