@@ -256,7 +256,7 @@ async function handleCharacterCreation(message, threadId) {
             await message.channel.send('✅ Character creation complete! Head back to the main channel.');
 
             const mainChannel = await message.client.channels.fetch(channelId);
-            await mainChannel.send(
+            if (mainChannel) await mainChannel.send(
                 `⚔️ **${characterName}** is ready! ` +
                 `Run \`!party\` to see the roster, or \`!start_campaign\` when everyone's set.`
             );
@@ -389,19 +389,18 @@ client.on('messageCreate', async (message) => {
             try {
                 thread = await message.channel.threads.create({
                     name: `Character Creation — ${message.member?.displayName ?? message.author.username}`,
-                    autoArchiveDuration: 60,
+                    autoArchiveDuration: 1440,
                 });
             } catch (error) {
                 return message.reply(`Failed to create thread: ${error.message}. Make sure I have \`Create Public Threads\` permission.`);
             }
 
-            creationSessions.set(thread.id, { userId: message.author.id, channelId, history: [] });
-            const session = creationSessions.get(thread.id);
-
-            await thread.members.add(message.author.id);
+            const sessionData = { userId: message.author.id, channelId, history: [] };
+            creationSessions.set(thread.id, sessionData);
 
             const kickoff = 'A player wants to create a D&D character. Welcome them and start the character creation process.';
             try {
+                await thread.members.add(message.author.id);
                 const opening = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',
                     contents: [{ role: 'user', parts: [{ text: kickoff }] }],
@@ -414,7 +413,7 @@ client.on('messageCreate', async (message) => {
                 });
                 const openingText = opening.text;
                 if (!openingText) throw new Error('Empty response from Gemini');
-                session.history.push(
+                sessionData.history.push(
                     { role: 'user', parts: [{ text: kickoff }] },
                     { role: 'model', parts: [{ text: openingText }] }
                 );
