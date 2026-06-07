@@ -459,7 +459,11 @@ client.on('messageCreate', async (message) => {
             }
 
             for (const [threadId, s] of creationSessions) {
-                if (s.channelId === channelId) creationSessions.delete(threadId);
+                if (s.channelId === channelId) {
+                    const thread = await message.client.channels.fetch(threadId).catch(() => null);
+                    if (thread) await thread.send('⚔️ The campaign has started! Head back to the main channel.').catch(() => {});
+                    creationSessions.delete(threadId);
+                }
             }
 
             const titleMatch   = config.brief.match(/\*\*Title:\*\*\s*(.+)/);
