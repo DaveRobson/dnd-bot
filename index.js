@@ -2,6 +2,7 @@ import { Client, GatewayIntentBits } from 'discord.js';
 import { GoogleGenAI } from '@google/genai';
 import fs from 'fs';
 import dotenv from 'dotenv';
+import * as db from './db.js';
 
 dotenv.config();
 
@@ -196,6 +197,7 @@ async function handleCampaignSetup(message, channelId) {
             const briefMatch = clean.match(/## CAMPAIGN BRIEF[\s\S]*/);
             const brief = briefMatch ? briefMatch[0] : clean;
             campaignConfig.set(channelId, { status: 'ready', brief, history });
+            await db.saveCampaign(channelId, { status: 'ready', brief });
             await message.channel.send(
                 '✅ **Campaign configured!**\n' +
                 'Each player: run `!create_character` to build your character in a private thread.\n' +
@@ -251,6 +253,7 @@ async function handleCharacterCreation(message, threadId) {
             if (!characterNames.has(channelId)) characterNames.set(channelId, new Map());
             characterNames.get(channelId).set(userId, characterName);
 
+            await db.saveCharacter(channelId, userId, { characterName, displayName, sheet: clean });
             creationSessions.delete(threadId);
 
             await message.channel.send('✅ Character creation complete! Head back to the main channel.');
@@ -267,8 +270,15 @@ async function handleCharacterCreation(message, threadId) {
     }
 }
 
-client.once('ready', () => {
-    console.log(`Dungeon Master online as ${client.user.tag}`);
+client.once('ready', async () => {
+    try {
+        await db.initDb();
+        await db.loadAll(chatSessions, channelThemes, characterNames, turnCounts, campaignConfig, readyCharacters);
+        console.log(`Dungeon Master online as ${client.user.tag} — state restored from DB`);
+    } catch (err) {
+        console.error('DB startup failed:', err);
+        process.exit(1);
+    }
 });
 
 client.on('messageCreate', async (message) => {
@@ -293,6 +303,8 @@ client.on('messageCreate', async (message) => {
             for (const [threadId, s] of creationSessions) {
                 if (s.channelId === channelId) creationSessions.delete(threadId);
             }
+            await db.clearChannel(channelId);
+            await db.saveChannelState(channelId, theme, 0);
             return message.channel.send(`**Theme set: ${theme.toUpperCase()}**\n*The universe shifts. Set your character name with \`!character <name>\`, then just type to play.*`);
         }
 
@@ -301,6 +313,8 @@ client.on('messageCreate', async (message) => {
             if (!name) return message.reply('Usage: `!character <name>` — e.g. `!character Thorin Oakenshield`');
             if (!characterNames.has(channelId)) characterNames.set(channelId, new Map());
             characterNames.get(channelId).set(message.author.id, name);
+            const displayName = message.member?.displayName ?? message.author.username;
+            await db.saveCharacter(channelId, message.author.id, { characterName: name, displayName, sheet: null });
             return message.reply(`Character set to **${name}**. The DM will address you by this name.`);
         }
 
@@ -314,6 +328,7 @@ client.on('messageCreate', async (message) => {
             for (const [threadId, s] of creationSessions) {
                 if (s.channelId === channelId) creationSessions.delete(threadId);
             }
+            await db.clearChannel(channelId);
             return message.reply('Session fully reset. Run `!setup_campaign` to start a new campaign.');
         }
 
@@ -336,6 +351,7 @@ client.on('messageCreate', async (message) => {
 
         if (command === 'setup_campaign') {
             campaignConfig.set(channelId, { status: 'configuring', brief: null, history: [] });
+            await db.deleteCampaignAndChars(channelId);
             readyCharacters.delete(channelId);
             characterNames.set(channelId, new Map());
             for (const [threadId, s] of creationSessions) {
@@ -518,6 +534,10 @@ client.on('messageCreate', async (message) => {
                 channelThemes.set(channelId, 'fantasy');
                 turnCounts.set(channelId, 0);
                 chatSessions.set(channelId, history);
+
+                await db.saveChannelState(channelId, 'fantasy', 0);
+                await db.saveCampaign(channelId, { lore: null });
+                await db.saveChatSession(channelId, history);
 
                 for (let i = 0; i < narration.length; i += 2000) {
                     await message.channel.send(narration.slice(i, i + 2000));
