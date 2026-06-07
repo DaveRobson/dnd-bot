@@ -91,6 +91,37 @@ Once complete, output this exact block:
 
 End your final message with exactly this on its own line: [CHARACTER READY]`;
 
+async function geminiWithRetry(params, notifyChannel = null, maxRetries = 3) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            return await ai.models.generateContent(params);
+        } catch (err) {
+            const msg = err?.message ?? '';
+            const isRateLimit = msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+            if (!isRateLimit || attempt === maxRetries) throw err;
+
+            let delayMs = 65000;
+            try {
+                const parsed = JSON.parse(msg);
+                const retryInfo = parsed?.error?.details?.find(d => d['@type']?.includes('RetryInfo'));
+                if (retryInfo?.retryDelay) {
+                    const secs = parseInt(retryInfo.retryDelay, 10);
+                    if (!isNaN(secs)) delayMs = secs * 1000 + 2000;
+                }
+            } catch { /* use default */ }
+
+            const waitSecs = Math.round(delayMs / 1000);
+            console.log(`Gemini rate limit — retrying in ${waitSecs}s (attempt ${attempt + 1}/${maxRetries})`);
+            if (notifyChannel) {
+                await notifyChannel.send(
+                    `⏳ *Rate limit hit — retrying in ${waitSecs}s (attempt ${attempt + 1}/${maxRetries})...*`
+                ).catch(() => {});
+            }
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+}
+
 function buildSystemPrompt(themeKey, campaignState = null) {
     const file = THEME_FILES[themeKey] ?? '5esrd.md';
     let rules = '';
@@ -137,7 +168,7 @@ ${rules}`;
 
 async function summariseSession(channelId, history) {
     try {
-        const response = await ai.models.generateContent({
+        const response = await geminiWithRetry({
             model: 'gemini-2.5-flash',
             contents: history,
             config: {
@@ -227,7 +258,7 @@ async function handleCampaignSetup(message, channelId) {
     await message.channel.sendTyping();
 
     try {
-        const response = await ai.models.generateContent({
+        const response = await geminiWithRetry({
             model: 'gemini-2.5-flash',
             contents: history,
             config: {
@@ -236,7 +267,7 @@ async function handleCampaignSetup(message, channelId) {
                 topP: 0.9,
                 topK: 50,
             },
-        });
+        }, message.channel);
 
         const text = response.text;
         if (!text) throw new Error('Empty response from Gemini');
@@ -276,7 +307,7 @@ async function handleCharacterCreation(message, threadId) {
     await message.channel.sendTyping();
 
     try {
-        const response = await ai.models.generateContent({
+        const response = await geminiWithRetry({
             model: 'gemini-2.5-flash',
             contents: history,
             config: {
@@ -285,7 +316,7 @@ async function handleCharacterCreation(message, threadId) {
                 topP: 0.9,
                 topK: 50,
             },
-        });
+        }, message.channel);
 
         const text = response.text;
         if (!text) throw new Error('Empty response from Gemini');
@@ -426,7 +457,7 @@ client.on('messageCreate', async (message) => {
 
             const kickoff = 'A group of friends want to set up a D&D campaign. Welcome them and ask your first question.';
             try {
-                const opening = await ai.models.generateContent({
+                const opening = await geminiWithRetry({
                     model: 'gemini-2.5-flash',
                     contents: [{ role: 'user', parts: [{ text: kickoff }] }],
                     config: {
@@ -435,7 +466,7 @@ client.on('messageCreate', async (message) => {
                         topP: 0.9,
                         topK: 50,
                     },
-                });
+                }, message.channel);
                 const openingText = opening.text;
                 if (!openingText) throw new Error('Empty response from Gemini');
                 config.history.push(
@@ -480,7 +511,7 @@ client.on('messageCreate', async (message) => {
             const kickoff = 'A player wants to create a D&D character. Welcome them and start the character creation process.';
             try {
                 await thread.members.add(message.author.id);
-                const opening = await ai.models.generateContent({
+                const opening = await geminiWithRetry({
                     model: 'gemini-2.5-flash',
                     contents: [{ role: 'user', parts: [{ text: kickoff }] }],
                     config: {
@@ -489,7 +520,7 @@ client.on('messageCreate', async (message) => {
                         topP: 0.9,
                         topK: 50,
                     },
-                });
+                }, thread);
                 const openingText = opening.text;
                 if (!openingText) throw new Error('Empty response from Gemini');
                 sessionData.history.push(
@@ -573,7 +604,7 @@ client.on('messageCreate', async (message) => {
             await message.channel.sendTyping();
 
             try {
-                const response = await ai.models.generateContent({
+                const response = await geminiWithRetry({
                     model: 'gemini-2.5-flash',
                     contents: history,
                     config: {
@@ -582,7 +613,7 @@ client.on('messageCreate', async (message) => {
                         topP: 0.9,
                         topK: 50,
                     },
-                });
+                }, message.channel);
 
                 const narration = response.text;
                 if (!narration) throw new Error('Empty response from Gemini');
@@ -649,7 +680,7 @@ client.on('messageCreate', async (message) => {
     await message.channel.sendTyping();
 
     try {
-        const response = await ai.models.generateContent({
+        const response = await geminiWithRetry({
             model: 'gemini-2.5-flash',
             contents: history,
             config: {
@@ -658,7 +689,7 @@ client.on('messageCreate', async (message) => {
                 topP: 0.8,
                 topK: 40,
             },
-        });
+        }, message.channel);
 
         const narration = response.text;
         if (!narration) throw new Error('Empty response from Gemini');
