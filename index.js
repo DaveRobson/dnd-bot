@@ -573,7 +573,7 @@ client.on('messageCreate', async (message) => {
             contents: history,
             config: {
                 systemInstruction: buildSystemPrompt(channelThemes.get(channelId)),
-                temperature: 0.2,
+                temperature: 0.4, // Testing value — drop to 0.2 for production
                 topP: 0.8,
                 topK: 40,
             },
