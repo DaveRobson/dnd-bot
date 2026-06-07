@@ -35,6 +35,9 @@ const readyCharacters = new Map(); // channelId -> Map(userId -> { displayName, 
 const MAX_HISTORY = 50;
 const SUMMARY_INTERVAL = 10; // Summarise and compress history every N player turns
 
+const ruleCaches = new Map();  // themeKey -> { name: string, created: number }
+const CACHE_TTL_MS = 55 * 60 * 1000; // 55 min — refresh before the 1-hour server TTL expires
+
 const THEME_FILES = {
     fantasy: '5esrd.md',
     cyberpunk: 'cyberpunk.md',
@@ -90,6 +93,28 @@ Once complete, output this exact block:
 **Personality:** [1 sentence]
 
 End your final message with exactly this on its own line: [CHARACTER READY]`;
+
+async function ensureRulesCache(themeKey) {
+    const existing = ruleCaches.get(themeKey);
+    if (existing && Date.now() - existing.created < CACHE_TTL_MS) {
+        return existing.name;
+    }
+    try {
+        const cache = await ai.caches.create({
+            model: 'gemini-2.5-flash',
+            config: {
+                systemInstruction: buildSystemPrompt(themeKey),
+                ttl: '3600s',
+            },
+        });
+        ruleCaches.set(themeKey, { name: cache.name, created: Date.now() });
+        console.log(`Rules cache ready for ${themeKey}: ${cache.name}`);
+        return cache.name;
+    } catch (err) {
+        console.error(`Rules cache unavailable for ${themeKey}: ${err.message}`);
+        return null; // graceful fallback — calls will use full system prompt instead
+    }
+}
 
 async function geminiWithRetry(params, notifyChannel = null, maxRetries = 3) {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -601,15 +626,25 @@ client.on('messageCreate', async (message) => {
 
             const history = [{ role: 'user', parts: [{ text: openingContext }] }];
 
+            await message.channel.send('🗂️ *Caching rules...*');
+            const cacheName = await ensureRulesCache('fantasy');
+            if (cacheName) campaignConfig.get(channelId).cacheName = cacheName;
+
             await message.channel.sendTyping();
 
             try {
+                const cfg = campaignConfig.get(channelId);
                 const response = await geminiWithRetry({
                     model: 'gemini-2.5-flash',
                     contents: history,
-                    config: {
-                        systemInstruction: buildSystemPrompt('fantasy', campaignConfig.get(channelId)),
-                        temperature: 0.7, // Testing value — drop to 0.4 for production
+                    config: cfg?.cacheName ? {
+                        cachedContent: cfg.cacheName,
+                        temperature: 0.7,
+                        topP: 0.9,
+                        topK: 50,
+                    } : {
+                        systemInstruction: buildSystemPrompt('fantasy', cfg),
+                        temperature: 0.7,
                         topP: 0.9,
                         topK: 50,
                     },
@@ -679,12 +714,20 @@ client.on('messageCreate', async (message) => {
 
     await message.channel.sendTyping();
 
+    const activeTheme = channelThemes.get(channelId);
+    const cachedRules = await ensureRulesCache(activeTheme).catch(() => null);
+
     try {
         const response = await geminiWithRetry({
             model: 'gemini-2.5-flash',
             contents: history,
-            config: {
-                systemInstruction: buildSystemPrompt(channelThemes.get(channelId), campaignConfig.get(channelId)),
+            config: cachedRules ? {
+                cachedContent: cachedRules,
+                temperature: 0.4,
+                topP: 0.8,
+                topK: 40,
+            } : {
+                systemInstruction: buildSystemPrompt(activeTheme, campaignConfig.get(channelId)),
                 temperature: 0.4, // Testing value — drop to 0.2 for production
                 topP: 0.8,
                 topK: 40,
