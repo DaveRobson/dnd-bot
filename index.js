@@ -175,6 +175,7 @@ CORE PROTOCOLS:
 3. MULTIPLAYER: Inputs are formatted as "[Character Name (Player)]: Action" or "[Player]: Action" if no character name is set. Track every character in the party individually — maintain their distinct voice, situation, and relationships.
 4. OOC (OUT OF CHARACTER): If a message is wrapped in parentheses or prefixed with "OOC:", step outside the narrative, answer clearly, then offer to continue. Do not narrate fictional events for OOC messages.
 5. SAVE: Only when a player says "Save campaign", output a raw copy-pasteable # CURRENT CAMPAIGN STATE block listing every character (name, class, HP, inventory, status) and current location and recent events.
+6. PLAYER-TO-PLAYER DIALOGUE: When players are speaking to each other in character, do NOT paraphrase or echo what they said. Only respond if an NPC or companion character has something to say, the environment reacts, or there is an immediate mechanical consequence. If none of those apply, give only a single brief atmospheric beat in italics (e.g. *A raven watches silently from a nearby headstone.*) — nothing more.
 
 CRITICAL PROCESSING ORDER:
 Every time a player declares an action, respond in two strict steps:
@@ -624,6 +625,10 @@ client.on('messageCreate', async (message) => {
                 `Begin the session. Narrate the opening scene described in the campaign brief. ` +
                 `Address each character by name as they arrive. Set the tone immediately.`;
 
+            // Set theme immediately so messages arriving during the cache/Gemini wait don't get "set a theme first"
+            channelThemes.set(channelId, 'fantasy');
+            turnCounts.set(channelId, 0);
+
             const history = [{ role: 'user', parts: [{ text: openingContext }] }];
 
             await message.channel.send('🗂️ *Caching rules...*');
@@ -654,8 +659,6 @@ client.on('messageCreate', async (message) => {
                 if (!narration) throw new Error('Empty response from Gemini');
                 history.push({ role: 'model', parts: [{ text: narration }] });
 
-                channelThemes.set(channelId, 'fantasy');
-                turnCounts.set(channelId, 0);
                 chatSessions.set(channelId, history);
 
                 await db.saveChannelState(channelId, 'fantasy', 0);
