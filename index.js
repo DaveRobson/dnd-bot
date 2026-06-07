@@ -306,6 +306,7 @@ client.on('messageCreate', async (message) => {
 
         if (command === 'wipe_memory') {
             chatSessions.set(channelId, []);
+            channelThemes.delete(channelId);
             characterNames.set(channelId, new Map());
             turnCounts.set(channelId, 0);
             campaignConfig.delete(channelId);
@@ -313,7 +314,7 @@ client.on('messageCreate', async (message) => {
             for (const [threadId, s] of creationSessions) {
                 if (s.channelId === channelId) creationSessions.delete(threadId);
             }
-            return message.reply('Session memory, character names, and campaign data cleared.');
+            return message.reply('Session fully reset. Run `!setup_campaign` to start a new campaign.');
         }
 
         if (command === 'help') {
@@ -444,6 +445,10 @@ client.on('messageCreate', async (message) => {
         }
 
         if (command === 'start_campaign') {
+            if (chatSessions.get(channelId)?.length > 0) {
+                return message.reply('A session is already in progress. Run `!wipe_memory` to reset first.');
+            }
+
             const config = campaignConfig.get(channelId);
             if (!config || config.status !== 'ready') {
                 return message.reply('No campaign configured. Run `!setup_campaign` first.');
@@ -451,6 +456,10 @@ client.on('messageCreate', async (message) => {
             const characters = readyCharacters.get(channelId);
             if (!characters || characters.size === 0) {
                 return message.reply('No characters ready yet. Players should run `!create_character`.');
+            }
+
+            for (const [threadId, s] of creationSessions) {
+                if (s.channelId === channelId) creationSessions.delete(threadId);
             }
 
             const titleMatch   = config.brief.match(/\*\*Title:\*\*\s*(.+)/);
@@ -475,9 +484,6 @@ client.on('messageCreate', async (message) => {
                 `*The adventure begins...*`
             );
 
-            channelThemes.set(channelId, 'fantasy');
-            turnCounts.set(channelId, 0);
-
             const characterSheets = [...characters.values()].map(({ sheet }) => sheet).join('\n\n');
             const openingContext =
                 `[CAMPAIGN CONFIGURATION]\n\n${config.brief}\n\n` +
@@ -486,7 +492,6 @@ client.on('messageCreate', async (message) => {
                 `Address each character by name as they arrive. Set the tone immediately.`;
 
             const history = [{ role: 'user', parts: [{ text: openingContext }] }];
-            chatSessions.set(channelId, history);
 
             await message.channel.sendTyping();
 
@@ -506,12 +511,16 @@ client.on('messageCreate', async (message) => {
                 if (!narration) throw new Error('Empty response from Gemini');
                 history.push({ role: 'model', parts: [{ text: narration }] });
 
+                channelThemes.set(channelId, 'fantasy');
+                turnCounts.set(channelId, 0);
+                chatSessions.set(channelId, history);
+
                 for (let i = 0; i < narration.length; i += 2000) {
                     await message.channel.send(narration.slice(i, i + 2000));
                 }
             } catch (error) {
                 console.error(error);
-                await message.channel.send(`**Error:** ${error.message}`);
+                await message.channel.send('**Error:** ' + error.message + '\nRun `!start_campaign` to try again.');
             }
             return;
         }
