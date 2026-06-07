@@ -162,6 +162,7 @@ Be strictly factual — only record what is explicitly established in the conver
 
 async function handleCampaignSetup(message, channelId) {
     const config = campaignConfig.get(channelId);
+    if (!config || config.status !== 'configuring') return;
     const { history } = config;
 
     history.push({ role: 'user', parts: [{ text: message.content }] });
@@ -183,7 +184,7 @@ async function handleCampaignSetup(message, channelId) {
         if (!text) throw new Error('Empty response from Gemini');
 
         const isReady = text.includes('[CAMPAIGN READY]');
-        const clean = text.replace('[CAMPAIGN READY]', '').trim();
+        const clean = text.replace(/\[CAMPAIGN READY\]/g, '').trim();
 
         history.push({ role: 'model', parts: [{ text: clean }] });
 
@@ -298,6 +299,7 @@ client.on('messageCreate', async (message) => {
                     },
                 });
                 const openingText = opening.text;
+                if (!openingText) throw new Error('Empty response from Gemini');
                 config.history.push(
                     { role: 'user', parts: [{ text: kickoff }] },
                     { role: 'model', parts: [{ text: openingText }] }
@@ -305,7 +307,7 @@ client.on('messageCreate', async (message) => {
                 await message.channel.send(openingText);
             } catch (error) {
                 console.error(error);
-                await message.channel.send(`**Error starting campaign setup:** ${error.message}`);
+                await message.channel.send(`**Setup failed:** ${error.message}\nRun \`!setup_campaign\` to try again.`);
                 campaignConfig.delete(channelId);
             }
             return;
