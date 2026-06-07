@@ -208,6 +208,65 @@ async function handleCampaignSetup(message, channelId) {
     }
 }
 
+async function handleCharacterCreation(message, threadId) {
+    const session = creationSessions.get(threadId);
+    if (!session) return;
+    const { userId, channelId, history } = session;
+
+    history.push({ role: 'user', parts: [{ text: message.content }] });
+    await message.channel.sendTyping();
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: history,
+            config: {
+                systemInstruction: CHARACTER_CREATION_PROMPT,
+                temperature: 0.5,
+                topP: 0.9,
+                topK: 50,
+            },
+        });
+
+        const text = response.text;
+        if (!text) throw new Error('Empty response from Gemini');
+
+        const isReady = text.includes('[CHARACTER READY]');
+        const clean = text.replace(/\[CHARACTER READY\]/g, '').trim();
+
+        history.push({ role: 'model', parts: [{ text: clean }] });
+
+        for (let i = 0; i < clean.length; i += 2000) {
+            await message.channel.send(clean.slice(i, i + 2000));
+        }
+
+        if (isReady) {
+            const nameMatch = clean.match(/\*\*Name:\*\*\s*(.+)/);
+            const characterName = nameMatch ? nameMatch[1].trim() : 'Unknown Hero';
+            const displayName = message.member?.displayName ?? message.author.username;
+
+            if (!readyCharacters.has(channelId)) readyCharacters.set(channelId, new Map());
+            readyCharacters.get(channelId).set(userId, { displayName, characterName, sheet: clean });
+
+            if (!characterNames.has(channelId)) characterNames.set(channelId, new Map());
+            characterNames.get(channelId).set(userId, characterName);
+
+            creationSessions.delete(threadId);
+
+            await message.channel.send('✅ Character creation complete! Head back to the main channel.');
+
+            const mainChannel = await message.client.channels.fetch(channelId);
+            await mainChannel.send(
+                `⚔️ **${characterName}** is ready! ` +
+                `Run \`!party\` to see the roster, or \`!start_campaign\` when everyone's set.`
+            );
+        }
+    } catch (error) {
+        console.error(error);
+        await message.channel.send(`**Error:** ${error.message}`);
+    }
+}
+
 client.once('ready', () => {
     console.log(`Dungeon Master online as ${client.user.tag}`);
 });
@@ -313,6 +372,62 @@ client.on('messageCreate', async (message) => {
             return;
         }
 
+        if (command === 'create_character') {
+            const config = campaignConfig.get(channelId);
+            if (!config || config.status !== 'ready') {
+                return message.reply('Set up the campaign first with `!setup_campaign`.');
+            }
+
+            const existingEntry = [...creationSessions.entries()].find(
+                ([, s]) => s.userId === message.author.id && s.channelId === channelId
+            );
+            if (existingEntry) {
+                return message.reply(`You already have a character creation thread: <#${existingEntry[0]}>.`);
+            }
+
+            let thread;
+            try {
+                thread = await message.channel.threads.create({
+                    name: `Character Creation — ${message.member?.displayName ?? message.author.username}`,
+                    autoArchiveDuration: 60,
+                });
+            } catch (error) {
+                return message.reply(`Failed to create thread: ${error.message}. Make sure I have \`Create Public Threads\` permission.`);
+            }
+
+            creationSessions.set(thread.id, { userId: message.author.id, channelId, history: [] });
+            const session = creationSessions.get(thread.id);
+
+            await thread.members.add(message.author.id);
+
+            const kickoff = 'A player wants to create a D&D character. Welcome them and start the character creation process.';
+            try {
+                const opening = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: [{ role: 'user', parts: [{ text: kickoff }] }],
+                    config: {
+                        systemInstruction: CHARACTER_CREATION_PROMPT,
+                        temperature: 0.5,
+                        topP: 0.9,
+                        topK: 50,
+                    },
+                });
+                const openingText = opening.text;
+                if (!openingText) throw new Error('Empty response from Gemini');
+                session.history.push(
+                    { role: 'user', parts: [{ text: kickoff }] },
+                    { role: 'model', parts: [{ text: openingText }] }
+                );
+                await thread.send(openingText);
+            } catch (error) {
+                creationSessions.delete(thread.id);
+                await thread.delete().catch(() => {});
+                return message.reply(`Failed to start character creation: ${error.message}`);
+            }
+
+            return message.reply(`Your character creation thread is ready: <#${thread.id}>`);
+        }
+
         return;
     }
 
@@ -320,6 +435,14 @@ client.on('messageCreate', async (message) => {
     if (!message.channel.isThread() && campaignConfig.get(channelId)?.status === 'configuring') {
         return handleCampaignSetup(message, channelId);
     }
+
+    // Route to character creation handler if message is in an active creation thread
+    if (message.channel.isThread() && creationSessions.has(message.channel.id)) {
+        return handleCharacterCreation(message, message.channel.id);
+    }
+
+    // Ignore all other thread messages — gameplay only happens in the main channel
+    if (message.channel.isThread()) return;
 
     if (!channelThemes.has(channelId)) {
         return message.reply('Set a theme first with `!set_theme fantasy`, `cyberpunk`, or `western`.');
