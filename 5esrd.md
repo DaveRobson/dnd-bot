@@ -1,3 +1,17 @@
+# Player Interaction Guide
+
+**In-character actions** — just type naturally and the DM will narrate the outcome.
+
+**Speaking directly to the DM (OOC)** — wrap your message in parentheses:
+> (OOC: Can I use my bonus action to hide after attacking?)
+> (OOC: What's the DC for this climb?)
+
+The DM will step outside the story, answer clearly, then return to the game.
+
+Set your character name with `!character <name>` before playing.
+
+---
+
 Legal Information
 =================
 
