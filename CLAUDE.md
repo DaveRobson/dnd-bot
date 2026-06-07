@@ -30,26 +30,37 @@ npm start            # Run in production
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and fill in both values:
+Copy `.env.example` to `.env` and fill in all values:
 - `DISCORD_TOKEN` — from the Discord Developer Portal (Bot section)
 - `GEMINI_API_KEY` — from Google AI Studio
+- `DATABASE_URL` — Postgres connection string; on Railway this is auto-injected when you add the Postgres plugin
 
-On Railway, set these via the Railway dashboard (Variables tab).
+On Railway, set `DISCORD_TOKEN` and `GEMINI_API_KEY` via the Railway dashboard (Variables tab). `DATABASE_URL` is injected automatically by the Railway Postgres plugin.
 
 ## Architecture
 
-All logic lives in `index.js`. There are no modules or subdirectories.
+Logic lives in two files:
+- `index.js` — all bot logic, commands, and event handlers
+- `db.js` — all Postgres interaction (schema init, save/load/clear functions)
 
 **State** is held in seven in-memory Maps keyed by Discord `channelId` (or `threadId` for `creationSessions`):
 - `chatSessions` — Gemini conversation history for active gameplay
 - `channelThemes` — active theme/rulebook per channel
 - `characterNames` — channelId → Map(userId → characterName); populated by `!character` and `!create_character`
 - `turnCounts` — auto-summarisation counter per channel
-- `campaignConfig` — campaign setup state: `'configuring'` | `'ready'`, brief, history
-- `creationSessions` — per-thread character creation state (keyed by threadId)
+- `campaignConfig` — campaign setup state: `'configuring'` | `'ready'`, brief, history, lore, storyArcs, relationships
+- `creationSessions` — per-thread character creation state (keyed by threadId); **not persisted**
 - `readyCharacters` — completed character sheets per channel
 
-State is lost on restart. Persisting to a database would be the main architectural change needed for production.
+State is persisted to Railway Postgres via a write-through pattern. On startup, `db.loadAll()` restores all Maps from the database so sessions survive bot restarts.
+
+**Persistence layer (`db.js`) exports:**
+- `initDb()` — creates all four tables on startup if they don't exist
+- `loadAll(Maps...)` — populates all in-memory Maps from the database on startup
+- `saveChannelState / saveCampaign / saveCharacter / saveChatSession` — upsert helpers
+- `deleteCampaignAndChars / clearChannel` — transactional deletes (used by `!setup_campaign` re-run and `!wipe_memory`/`!set_theme`)
+
+**Four database tables:** `channel_state`, `campaign` (with JSONB `story_arcs` and `relationships`), `characters`, `chat_sessions`.
 
 **Pre-session flow:**
 1. `!setup_campaign` → Gemini Q&A in main channel → detects `[CAMPAIGN READY]` sentinel → stores campaign brief
@@ -58,7 +69,7 @@ State is lost on restart. Persisting to a database would be the main architectur
 
 **Theme system** — each theme maps to a Markdown file (`5esrd.md`, `cyberpunk.md`, `space_western.md`) loaded at request time and injected into the Gemini system prompt. Populate `5esrd.md` with actual D&D 5e SRD content. Note: `!start_campaign` always hardcodes the `'fantasy'` theme regardless of any prior `!set_theme` call.
 
-**Session history** is capped at `MAX_HISTORY = 50` turns. Every `SUMMARY_INTERVAL = 10` turns, a second Gemini call compresses old history into a structured campaign state summary injected as ground truth.
+**Session history** is capped at `MAX_HISTORY = 50` turns. Every `SUMMARY_INTERVAL = 10` turns, `summariseSession()` fires a second Gemini call that returns four structured sections: `HISTORY SUMMARY` (compresses history as ground truth), `STORY ARCS` (JSON), `RELATIONSHIPS` (JSON), and `LORE UPDATES` (JSON). Parsed data is written back to `campaignConfig` in memory and persisted to the `campaign` table. The DM system prompt (`buildSystemPrompt`) injects active story arcs and relationships on every gameplay turn.
 
 **Temperatures (current testing values — reduce for production):**
 - Gameplay: `0.4` (production: `0.2`)
