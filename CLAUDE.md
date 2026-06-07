@@ -43,7 +43,7 @@ All logic lives in `index.js`. There are no modules or subdirectories.
 **State** is held in seven in-memory Maps keyed by Discord `channelId` (or `threadId` for `creationSessions`):
 - `chatSessions` — Gemini conversation history for active gameplay
 - `channelThemes` — active theme/rulebook per channel
-- `characterNames` — display name → character name mapping per channel
+- `characterNames` — channelId → Map(userId → characterName); populated by `!character` and `!create_character`
 - `turnCounts` — auto-summarisation counter per channel
 - `campaignConfig` — campaign setup state: `'configuring'` | `'ready'`, brief, history
 - `creationSessions` — per-thread character creation state (keyed by threadId)
@@ -56,7 +56,7 @@ State is lost on restart. Persisting to a database would be the main architectur
 2. `!create_character` → bot creates a public thread per player → Gemini guides creation → detects `[CHARACTER READY]` sentinel → stores character sheet, announces in main channel
 3. `!start_campaign` → compiles brief + all sheets → sets theme to `'fantasy'` → fires opening narration
 
-**Theme system** — each theme maps to a Markdown file (`5esrd.md`, `cyberpunk.md`, `space_western.md`) loaded at request time and injected into the Gemini system prompt. Populate `5esrd.md` with actual D&D 5e SRD content.
+**Theme system** — each theme maps to a Markdown file (`5esrd.md`, `cyberpunk.md`, `space_western.md`) loaded at request time and injected into the Gemini system prompt. Populate `5esrd.md` with actual D&D 5e SRD content. Note: `!start_campaign` always hardcodes the `'fantasy'` theme regardless of any prior `!set_theme` call.
 
 **Session history** is capped at `MAX_HISTORY = 50` turns. Every `SUMMARY_INTERVAL = 10` turns, a second Gemini call compresses old history into a structured campaign state summary injected as ground truth.
 
