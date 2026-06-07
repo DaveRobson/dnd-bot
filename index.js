@@ -185,7 +185,7 @@ async function handleCampaignSetup(message, channelId) {
         const isReady = text.includes('[CAMPAIGN READY]');
         const clean = text.replace('[CAMPAIGN READY]', '').trim();
 
-        history.push({ role: 'model', parts: [{ text }] });
+        history.push({ role: 'model', parts: [{ text: clean }] });
 
         for (let i = 0; i < clean.length; i += 2000) {
             await message.channel.send(clean.slice(i, i + 2000));
@@ -272,6 +272,9 @@ client.on('messageCreate', async (message) => {
             campaignConfig.set(channelId, { status: 'configuring', brief: null, history: [] });
             readyCharacters.delete(channelId);
             characterNames.set(channelId, new Map());
+            for (const [threadId, s] of creationSessions) {
+                if (s.channelId === channelId) creationSessions.delete(threadId);
+            }
             const config = campaignConfig.get(channelId);
 
             await message.channel.send(
