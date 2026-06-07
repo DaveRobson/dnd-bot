@@ -151,6 +151,15 @@ export async function loadAll(chatSessions, channelThemes, characterNames, turnC
     for (const row of chatSessionsRes.rows) {
         chatSessions.set(row.channel_id, row.history);
     }
+
+    // If a channel has chat history but no channel_state row (e.g. DB write failed during !start_campaign),
+    // default to 'fantasy' so the session stays playable after a restart.
+    for (const channelId of chatSessions.keys()) {
+        if (!channelThemes.has(channelId)) {
+            channelThemes.set(channelId, 'fantasy');
+            console.warn(`Recovered theme 'fantasy' for channel ${channelId} (missing channel_state row)`);
+        }
+    }
 }
 
 export async function clearChannel(channelId) {

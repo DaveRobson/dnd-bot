@@ -692,7 +692,14 @@ client.on('messageCreate', async (message) => {
     if (message.channel.isThread()) return;
 
     if (!channelThemes.has(channelId)) {
-        return message.reply('Set a theme first with `!set_theme fantasy`, `cyberpunk`, or `western`.');
+        // Recover silently if a campaign is already running (theme lost due to restart/deploy overlap)
+        const hasSession = chatSessions.get(channelId)?.length > 0;
+        const hasCampaign = campaignConfig.get(channelId)?.status === 'ready';
+        if (hasSession || hasCampaign) {
+            channelThemes.set(channelId, 'fantasy');
+        } else {
+            return message.reply('Set a theme first with `!set_theme fantasy`, `cyberpunk`, or `western`.');
+        }
     }
 
     const history = chatSessions.get(channelId) ?? [];
